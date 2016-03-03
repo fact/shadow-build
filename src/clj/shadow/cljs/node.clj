@@ -1,6 +1,7 @@
 (ns shadow.cljs.node
   (:refer-clojure :exclude [flush compile])
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.log :as log]
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
@@ -86,7 +87,7 @@
   ;; FIXME: does node need the imul.js fix? probably not
   (cljs/flush-sources-by-name state (mapcat :sources build-modules))
 
-  (cljs/with-logged-time
+  (log/with-logged-time
     [(:logger state) (format "Flushing node script: %s" (-> build-modules first :js-name))]
 
     (let [{:keys [js-name prepend prepend-js append-js sources]} (first build-modules)]
@@ -116,7 +117,7 @@
 
 (defn flush-optimized
   [{modules :optimized :keys [unoptimizable ^File public-dir public-path logger] :as state}]
-  (cljs/with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing to disk"]
 
     (when (not= 1 (count modules))
@@ -139,7 +140,7 @@
       (io/make-parents target)
       (spit target out)
 
-      (cljs/log-progress logger (format "Wrote module \"%s\" (size: %d)" js-name (count out)))
+      (log/log-progress logger (format "Wrote module \"%s\" (size: %d)" js-name (count out)))
 
       ;; FIXME: add source-map support for node
       #_(when source-map-name
@@ -180,7 +181,7 @@
     ;; I prefer to see progress
     ;; (prn (apply shell/sh script-args))
 
-    (cljs/with-logged-time
+    (log/with-logged-time
       [logger (format "Execute: %s" (pr-str script-args))]
       (let [proc (.start pb)
             ;; FIXME: what if this doesn't terminate?
@@ -259,7 +260,7 @@
              (into []))]
 
     (if (empty? test-namespaces)
-      (do (cljs/log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
+      (do (log/log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
           state)
       (do (-> state
               (make-test-runner test-namespaces)

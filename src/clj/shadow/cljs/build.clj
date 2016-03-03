@@ -28,6 +28,12 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [clojure.pprint :refer (pprint)]
+
+            [shadow.cljs.log :as log :refer [log-warning
+                                             log-progress
+                                             log-time-start
+                                             log-time-end
+                                             with-logged-time]]
             ))
 
 ;; (set! *warn-on-reflection* true)
@@ -68,25 +74,6 @@
       :ns name
       :ns-info ns-info
       }))
-
-(defprotocol BuildLog
-  (log-warning [this log-string])
-  (log-progress [this log-string])
-  (log-time-start [this log-string])
-  (log-time-end [this log-string time-in-ms]))
-
-(def ^{:dynamic true} *time-depth* 0)
-
-(defmacro with-logged-time
-  [[logger msg] & body]
-  `(let [msg# ~msg]
-     (log-time-start ~logger msg#)
-     (let [start# (System/currentTimeMillis)
-           result# (binding [*time-depth* (inc *time-depth*)]
-                     ~@body)]
-       (log-time-end ~logger msg# (- (System/currentTimeMillis) start#))
-       result#)
-     ))
 
 (defn compiler-state? [state]
   (true? (::is-compiler-state state)))
@@ -2237,20 +2224,7 @@ enable-emit-constants [state]
        :closure-defines {"goog.DEBUG" false
                          "goog.LOCALE" "en"}
 
-       :logger (let [log-lock (Object.)]
-                 (reify BuildLog
-                   (log-warning [_ msg]
-                     (locking log-lock
-                       (println (str "WARN: " msg))))
-                   (log-time-start [_ msg]
-                     (locking log-lock
-                       (println (format "-> %s" msg))))
-                   (log-time-end [_ msg ms]
-                     (locking log-lock
-                       (println (format "<- %s (%dms)" msg ms))))
-                   (log-progress [_ msg]
-                     (locking log-lock
-                       (println msg)))))}
+       :logger (log/logger)}
 
       (add-closure-configurator closure-add-replace-constants-pass)
       ))

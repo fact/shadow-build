@@ -1,5 +1,6 @@
 (ns shadow.cljs.umd
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.log :as log]
             [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.string :as str]
@@ -39,7 +40,7 @@
      (throw (ex-info "can only work with one module for now" {})))
 
    (let [output-file (umd-output-file state)]
-     (cljs/with-logged-time
+     (log/with-logged-time
        [logger (format "Flushing UMD file: %s" output-file)]
 
        (let [{:keys [output prepend append source-map-name name js-name] :as mod} (first modules)]
@@ -119,11 +120,11 @@
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
 
-  (cljs/with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing sources"]
     (cljs/flush-sources-by-name state (mapcat :sources build-modules)))
 
-  (cljs/with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing unoptimized UMD module"]
 
     ;; flush fake modules
