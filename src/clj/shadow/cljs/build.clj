@@ -25,7 +25,7 @@
             [clojure.tools.reader.reader-types :as readers]
             [loom.graph :as lg]
             [loom.alg :as la]
-            [cognitect.transit :as transit]
+            [shadow.cljs.manifest :as manifest]
             [shadow.cljs.build.internal :as internal
              :refer [compiler-state?]]
             [shadow.cljs.query :as query]
@@ -53,19 +53,6 @@
     ;; but given that only one thread is used to compile anyways there
     ;; is really no gain to running in another thread?
     (.disableThreads)))
-
-
-(defn write-cache [^File file data]
-  (with-open [out (FileOutputStream. file)]
-    (let [w (transit/writer out :json {:handlers {URL (transit/write-handler "url" str)}})]
-      (transit/write w data)
-      )))
-
-(defn read-cache [^File file]
-  (with-open [in (FileInputStream. file)]
-    (let [r (transit/reader in :json {:handlers {"url" (transit/read-handler #(URL. %))}})]
-      (transit/read r)
-      )))
 
 (comment
   ;; maybe add some kind of type info later
@@ -263,25 +250,6 @@ normalize-resource-name
               (recur (assoc! result name rc))
               )))))))
 
-(defn write-jar-manifest [file manifest]
-  (let [data (->> (vals manifest)
-                  ;; :input is non serializable deref, don't want to store actual content
-                  ;; might not need it, just a performance issue
-                  ;; reading closure jar with js contents 300ms without content 5ms
-                  ;; since we are only using a small percentage of those file we delay reading
-                  (map #(dissoc % :input))
-                  (into []))]
-    (write-cache file data)
-    ))
-
-(defn read-jar-manifest [file]
-  (let [entries (read-cache file)]
-    (reduce
-      (fn [m {:keys [name url] :as v}]
-        (assoc m name (assoc v :input (delay (slurp url)))))
-      {}
-      entries)))
-
 (defn process-deps-cljs
   [{:keys [use-file-min] :as state} manifest source-path]
   {:pre [(compiler-state? state)
@@ -344,10 +312,10 @@ normalize-resource-name
         jar-file (io/file path)
         manifest (if (and (.exists mfile)
                           (>= (.lastModified mfile) (.lastModified jar-file)))
-                   (read-jar-manifest mfile)
+                   (manifest/read-jar-manifest mfile)
                    (let [manifest (create-jar-manifest state path)]
                      (io/make-parents mfile)
-                     (write-jar-manifest mfile manifest)
+                     (manifest/write-jar-manifest mfile manifest)
                      manifest))]
     (-> (process-deps-cljs state manifest path)
         (vals))))
@@ -2056,6 +2024,16 @@ enable-emit-constants [state]
 
 (def is-cljs? util/cljs-file?)
 
+(def read-cache util/read-transit)
+
+(def write-cache util/write-transit)
+
 ;; Internal
 
 (def get-closure-compiler internal/get-closure-compiler)
+
+;; Jar Manifest
+
+(def read-jar-manifest jar/read-jar-manifest)
+
+(def write-jar-manifest jar/write-jar-manifest)

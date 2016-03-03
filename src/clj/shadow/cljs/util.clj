@@ -3,7 +3,10 @@
             [clojure.set :as set]
             [cljs.analyzer :as ana]
             [cljs.env :as env]
-            [clojure.pprint :refer (pprint)]))
+            [clojure.pprint :refer (pprint)]
+            [cognitect.transit :as transit])
+  (:import [java.io File FileOutputStream FileInputStream]
+           [java.net URL]))
 
 ;; Paths
 
@@ -74,6 +77,26 @@
 
 (defn jar? [^String name]
   (.endsWith (str/lower-case name) ".jar"))
+
+;; Transit
+
+(def transit-write-handlers
+  {:handlers {URL (transit/write-handler "url" str)}})
+
+(defn write-transit [^File file data]
+  (with-open [out (FileOutputStream. file)]
+    (let [w (transit/writer out :json transit-write-handlers)]
+      (transit/write w data)
+      )))
+
+(def transit-read-handlers
+  {:handlers {"url" (transit/read-handler #(URL. %))}})
+
+(defn read-transit [^File file]
+  (with-open [in (FileInputStream. file)]
+    (let [r (transit/reader in :json transit-read-handlers)]
+      (transit/read r)
+      )))
 
 
 ;; Parsing and Loading
