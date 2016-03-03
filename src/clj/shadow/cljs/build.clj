@@ -25,6 +25,7 @@
             [clojure.tools.reader.reader-types :as readers]
             [loom.graph :as lg]
             [loom.alg :as la]
+            [shadow.cljs.build.cache :as cache]
             [shadow.cljs.manifest :as manifest]
             [shadow.cljs.build.internal :as internal
              :refer [compiler-state?]]
@@ -527,97 +528,6 @@ normalize-resource-name
             :warnings warnings
             :source-map source-map))))))
 
-
-;; FIXME: must manually bump if anything cache related changes
-;; use something similar to clojurescript-version
-(def cache-file-version "v4")
-
-(defn get-cache-file-for-rc
-  ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
-  (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
-
-(defn make-age-map
-  "procudes a map of {source-name last-modified} for caching to identify
-   whether a cache is safe to use (if any last-modifieds to not match if is safer to recompile)"
-  [state ns]
-  (reduce
-    (fn [age-map source-name]
-      (let [last-modified (query/get-max-last-modified-for-source state source-name)]
-        ;; zero? is a pretty ugly indicator for deps that should not affect cache
-        ;; eg. runtime-setup
-        (if (pos? last-modified)
-          (assoc age-map source-name last-modified)
-          age-map)))
-    {}
-    (query/get-deps-for-ns state ns)))
-
-
-(def cache-affecting-options [:static-fns :elide-asserts])
-
-(defn load-cached-cljs-resource
-  [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns js-name name last-modified] :as rc}]
-  (let [cache-file (get-cache-file-for-rc state rc)
-        cache-js (io/file cache-dir cljs-runtime-path js-name)]
-
-    (when (and (.exists cache-file)
-               (> (.lastModified cache-file) last-modified)
-               (.exists cache-js)
-               (> (.lastModified cache-js) last-modified))
-
-      (let [cache-data (read-cache cache-file)
-            age-of-deps (make-age-map state ns)]
-
-        ;; just checking the "maximum" last-modified of all dependencies is not enough
-        ;; must check times of all deps, mostly to guard against jar changes
-        ;; lib-A v1 was released 3 days ago
-        ;; lib-A v2 was released 1 day ago
-        ;; we depend on lib-A and compile against v1 today
-        ;; realize that a new version exists and update deps
-        ;; compile again .. since we were compiled today the min-age is today
-        ;; which is larger than v2 release date thereby using cache if only checking one timestamp
-
-        (when (and (= (:source-path cache-data) (:source-path rc))
-                   (= age-of-deps (:age-of-deps cache-data))
-                   (every? #(= (get state %) (get cache-data %)) cache-affecting-options))
-          (log-progress logger (format "[CACHE] read: \"%s\"" name))
-
-          ;; restore analysis data
-          (let [ana-data (:analyzer cache-data)]
-
-            (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
-            (util/load-macros ana-data))
-
-          ;; merge resource data & return it
-          (-> (merge rc cache-data)
-              (dissoc :analyzer)
-              (assoc :output (slurp cache-js))))))))
-
-(defn write-cached-cljs-resource
-  [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns name js-name] :as rc}]
-
-  ;; only cache files that don't have warnings!
-  (when-not (seq (:warnings rc))
-
-    (let [cache-file (get-cache-file-for-rc state rc)
-          cache-data (-> rc
-                         (dissoc :file :output :input :url)
-                         (assoc :age-of-deps (make-age-map state ns)
-                                :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
-          cache-data (reduce
-                       (fn [cache-data option-key]
-                         (assoc cache-data option-key (get state option-key)))
-                       cache-data
-                       cache-affecting-options)
-          cache-js (io/file cache-dir cljs-runtime-path js-name)]
-
-      (io/make-parents cache-file)
-      (write-cache cache-file cache-data)
-
-      (io/make-parents cache-js)
-      (spit cache-js (:output rc))
-
-      (log-progress logger (format "[CACHE] write: \"%s\"" name)))))
-
 (defn maybe-compile-cljs
   "take current state and cljs resource to compile
    make sure you are in with-compiler-env"
@@ -630,10 +540,10 @@ normalize-resource-name
                         (and (= cache-level :jars)
                              from-jar)))]
     (or (when cache?
-          (load-cached-cljs-resource state src))
+          (cache/load-cached-cljs-resource! state src))
         (let [src (do-compile-cljs-resource state src)]
           (when cache?
-            (write-cached-cljs-resource state src))
+            (cache/write-cached-cljs-resource! state src))
           src))))
 
 (defn merge-provides [state provided-by provides]
@@ -1999,6 +1909,8 @@ enable-emit-constants [state]
 ;;-------------------------------------------------------------------
 ;; Moved vars
 
+;; Query
+
 (def get-max-last-modified-for-source
   query/get-max-last-modified-for-source)
 
@@ -2020,6 +1932,8 @@ enable-emit-constants [state]
 
 (def get-reloadable-source-paths query/get-reloadable-source-paths)
 
+;; Util
+
 (def is-cljc? util/cljc-file?)
 
 (def is-cljs? util/cljs-file?)
@@ -2036,4 +1950,15 @@ enable-emit-constants [state]
 
 (def read-jar-manifest jar/read-jar-manifest)
 
+
 (def write-jar-manifest jar/write-jar-manifest)
+
+;; Cache
+
+(def get-cache-file-for-rc cache/get-cache-file-for-rc)
+
+(def make-age-map cache/make-age-map)
+
+(def load-cached-cljs-resource cache/load-cached-cljs-resource!)
+
+(def write-cached-cljs-resource cache/write-cached-cljs-resource!)
