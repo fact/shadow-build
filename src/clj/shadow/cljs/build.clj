@@ -26,6 +26,8 @@
             [loom.graph :as lg]
             [loom.alg :as la]
             [cognitect.transit :as transit]
+            [shadow.cljs.build.internal :as internal
+             :refer [compiler-state?]]
             [shadow.cljs.util :as util :refer [ns->cljs-file
                                                cljs-file->ns
                                                file-basename
@@ -79,8 +81,6 @@
       :ns-info ns-info
       }))
 
-(defn compiler-state? [state]
-  (true? (::is-compiler-state state)))
 
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
   (or (= :cljs type) ;; cljs is always usable
@@ -114,7 +114,7 @@
       :require-order []
       :provides #{'goog})
     ;; parse any other js
-    (let [deps (-> (JsFileParser. (.getErrorManager (::cc state)))
+    (let [deps (-> (JsFileParser. (.getErrorManager (internal/get-closure-compiler state)))
                    (.parseFile name name @input))]
       (assoc rc
         :requires (into #{} (map munge-goog-ns) (.getRequires deps))
@@ -2129,9 +2129,6 @@ enable-emit-constants [state]
 (defn set-build-options [state opts]
   (merge state opts))
 
-(defn get-closure-compiler [state]
-  (::cc state))
-
 (defn init-state []
   (-> {:compiler-env {} ;; will become env/*compiler*
 
@@ -2140,8 +2137,8 @@ enable-emit-constants [state]
                           #".aot.js$"
                           #"_test.js$"}
 
-       ::is-compiler-state true
-       ::cc (make-closure-compiler)
+       internal/compiler-state true
+       internal/closure-compiler (make-closure-compiler)
 
        :runtime {:print-fn :console}
        :macros-loaded #{}
@@ -2199,3 +2196,7 @@ enable-emit-constants [state]
 (def is-cljc? util/cljc-file?)
 
 (def is-cljs? util/cljs-file?)
+
+;; Internal
+
+(def get-closure-compiler internal/get-closure-compiler)
