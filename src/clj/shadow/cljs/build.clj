@@ -28,6 +28,7 @@
             [cognitect.transit :as transit]
             [shadow.cljs.build.internal :as internal
              :refer [compiler-state?]]
+            [shadow.cljs.query :as query]
             [shadow.cljs.util :as util :refer [ns->cljs-file
                                                cljs-file->ns
                                                file-basename
@@ -88,13 +89,6 @@
       (seq requires) ;; requires something is less useful?
       (= "goog/base.js" (:name rc)) ;; doesnt provide/require anything but is useful
       ))
-
-
-
-
-
-(defn conj-in [m k v]
-  (update-in m k (fn [old] (conj old v))))
 
 (defn set-conj [x y]
   (if x
@@ -394,101 +388,6 @@ normalize-resource-name
     (-> (process-deps-cljs state manifest path)
         (vals))))
 
-(defn get-resource-for-provide [state ns-sym]
-  {:pre [(compiler-state? state)
-         (symbol? ns-sym)]}
-  (when-let [name (get-in state [:provide->source ns-sym])]
-    (get-in state [:sources name])))
-
-(defn find-resource-by-js-name [state js-name]
-  {:pre [(compiler-state? state)
-         (string? js-name)]}
-  (let [rcs
-        (->> (:sources state)
-             (vals)
-             (filter #(= js-name (:js-name %)))
-             (into []))]
-    (when (not= 1 (count rcs))
-      ;; FIXME: this should be checked when scanning for resources
-      (throw (ex-info (format "multiple resources for js-name:%s" js-name)
-               {:js-name js-name
-                :resources rcs})))
-    (first rcs)))
-
-(defn- get-deps-for-src* [{:keys [deps-stack] :as state} name]
-  {:pre [(compiler-state? state)]}
-  (when-not (string? name)
-    (throw (ex-info (format "trying to get deps for \"%s\"" (pr-str name)) {})))
-
-  (cond
-    ;; don't run in circles
-    (some #(= name %) deps-stack)
-    (let [path (->> (conj deps-stack name)
-                    (drop-while #(not= name %))
-                    (str/join " -> "))]
-      (throw (ex-info (format "circular dependency: %s" path) {:name name :stack deps-stack})))
-
-    ;; don't revisit
-    (contains? (:deps-visited state) name)
-    state
-
-    :else
-    (let [requires (get-in state [:sources name :require-order])]
-      (when-not (and requires (vector? requires))
-        (throw (ex-info (format "cannot find required deps for \"%s\"" name) {:name name})))
-
-      (let [state (-> state
-                      (conj-in [:deps-visited] name)
-                      (conj-in [:deps-stack] name))
-            state (->> requires
-                       (map (fn [require-sym]
-                              (let [src-name (get-in state [:provide->source require-sym])]
-                                (when-not src-name
-                                  (throw
-                                    (ex-info
-                                      (format "ns \"%s\" not available, required by %s" require-sym name)
-                                      {:ns require-sym
-                                       :src name})))
-                                src-name
-                                )))
-                       (into [] (distinct))
-                       (reduce get-deps-for-src* state))
-            state (update state :deps-stack (fn [stack] (into [] (butlast stack))))]
-        (conj-in state [:deps-ordered] name)
-        ))))
-
-(defn get-deps-for-src
-  "returns names of all required sources for a given resource by name (in dependency order), does include self
-   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
-  [state src-name]
-  {:pre [(compiler-state? state)
-         (string? src-name)]}
-  (-> state
-      (assoc :deps-stack []
-             :deps-ordered []
-             :deps-visited #{})
-      (get-deps-for-src* src-name)
-      :deps-ordered))
-
-(defn get-deps-for-ns
-  "returns names of all required sources for a given ns (in dependency order), does include self
-   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
-  [state ns-sym]
-  {:pre [(compiler-state? state)
-         (symbol? ns-sym)]}
-  (let [name (get-in state [:provide->source ns-sym])]
-    (when-not name
-      (let [reqs (->> state
-                      :sources
-                      (vals)
-                      (filter #(contains? (:requires %) ns-sym))
-                      (map :name)
-                      (into #{}))]
-        (throw (ex-info (format "ns \"%s\" not available, required by %s" ns-sym reqs) {:ns ns-sym :required-by reqs}))))
-
-    (get-deps-for-src state name)
-    ))
-
 
 (defn post-analyze-ns [{:keys [name] :as ast} opts]
   (let [ast (-> ast
@@ -669,32 +568,20 @@ normalize-resource-name
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
-(defn get-max-last-modified-for-source [state source-name]
-  (let [{:keys [last-modified macros] :as rc} (get-in state [:sources source-name])]
-
-    (transduce
-      (map #(get-in state [:macros % :last-modified]))
-      (completing
-        (fn [a b]
-          (Math/max ^long a ^long b)))
-      last-modified
-      macros
-      )))
-
 (defn make-age-map
   "procudes a map of {source-name last-modified} for caching to identify
    whether a cache is safe to use (if any last-modifieds to not match if is safer to recompile)"
   [state ns]
   (reduce
     (fn [age-map source-name]
-      (let [last-modified (get-max-last-modified-for-source state source-name)]
+      (let [last-modified (query/get-max-last-modified-for-source state source-name)]
         ;; zero? is a pretty ugly indicator for deps that should not affect cache
         ;; eg. runtime-setup
         (if (pos? last-modified)
           (assoc age-map source-name last-modified)
           age-map)))
     {}
-    (get-deps-for-ns state ns)))
+    (query/get-deps-for-ns state ns)))
 
 
 (def cache-affecting-options [:static-fns :elide-asserts])
@@ -1227,17 +1114,11 @@ normalize-resource-name
       ))
   state)
 
-(defn get-deps-for-mains [state mains]
-  (->> mains
-       (mapcat #(get-deps-for-ns state %))
-       (distinct)
-       (into [])))
-
 (defn do-analyze-module
   "resolve all deps for a given module, based on specified :mains
    will update state for each module with :sources, a list of sources needed to compile this module "
   [state {:keys [name mains] :as module}]
-  (assoc-in state [:modules name :sources] (get-deps-for-mains state mains)))
+  (assoc-in state [:modules name :sources] (query/get-deps-for-mains state mains)))
 
 (defn add-foreign
   [state name provides requires js-source externs-source]
@@ -1415,7 +1296,7 @@ normalize-resource-name
           ))))
 
 (defn compile-all-for-ns [state ns]
-  (let [deps (get-deps-for-ns state ns)]
+  (let [deps (query/get-deps-for-ns state ns)]
     (-> state
         (prepare-compile)
         (compile-sources deps))
@@ -1908,14 +1789,6 @@ normalize-resource-name
   ;; return unmodified state
   state)
 
-(defn get-reloadable-source-paths [state]
-  (->> state
-       :source-paths
-       (vals)
-       (filter :reloadable)
-       (map :path)
-       (set)))
-
 (defn reload-source [{:keys [url] :as rc}]
   (assoc rc :input (delay (slurp url))))
 
@@ -1936,44 +1809,8 @@ normalize-resource-name
             (merge-resource new-rc))))
     ))
 
-(defn find-dependent-names
-  [state ns-sym]
-  (->> (:sources state)
-       (vals)
-       (filter (fn [{:keys [requires]}]
-                 (contains? requires ns-sym)))
-       (map :name)
-       (into #{})
-       ))
-
-(defn find-dependents-for-names [state source-names]
-  (->> source-names
-       (map #(get-in state [:sources % :provides]))
-       (reduce set/union)
-       (map #(find-dependent-names state %))
-       (reduce set/union)
-       (into #{})))
-
-(defn find-resources-using-macro
-  "returns a set of names using the macro ns"
-  [state macro-ns]
-  (let [direct-dependents (->> (:sources state)
-                               (vals)
-                               (filter (fn [{:keys [macros] :as rc}]
-                                         (contains? macros macro-ns)))
-                               (map :name)
-                               (into #{}))]
-
-    ;; macro has a companion .cljs file
-    ;; FIXME: should check if that file actually self references
-    (if (get-resource-for-provide state macro-ns)
-      (-> (find-dependent-names state macro-ns)
-          (set/union direct-dependents))
-      direct-dependents
-      )))
-
 (defn reset-resources-using-macro [state macro-ns]
-  (let [names (find-resources-using-macro state macro-ns)]
+  (let [names (query/get-resources-using-macro state macro-ns)]
     (reduce reset-resource-by-name state names)
     ))
 
@@ -1982,7 +1819,7 @@ normalize-resource-name
 
    returns a seq of resource maps with a {:scan :new} value"
   [{:keys [sources] :as state}]
-  (let [reloadable-paths (get-reloadable-source-paths state)
+  (let [reloadable-paths (query/get-reloadable-source-paths state)
         known-files (->> sources
                          (vals)
                          (map (fn [{:keys [source-path name]}]
@@ -2003,7 +1840,7 @@ normalize-resource-name
   modified macros will cause all files using to to be returned as well
   although the files weren't modified physically the macro output may have changed"
   [{:keys [sources macros] :as state}]
-  (let [reloadable-paths (get-reloadable-source-paths state)]
+  (let [reloadable-paths (query/get-reloadable-source-paths state)]
 
     ;; FIXME: separate macro scanning from normal scanning
     (let [modified-macros
@@ -2025,7 +1862,7 @@ normalize-resource-name
           affected-by-macros
           (->> modified-macros
                (map :ns)
-               (map #(find-resources-using-macro state %))
+               (map #(query/get-resources-using-macro state %))
                (reduce set/union))]
 
       (->> (vals sources)
@@ -2099,7 +1936,7 @@ normalize-resource-name
 
     :modified
     (do (log-progress logger (format "[RELOAD] mod: %s" file))
-        (let [dependents (find-dependent-names state ns)]
+        (let [dependents (query/get-dependent-names state ns)]
           ;; modified files also trigger recompile of all its dependents
           (reduce reset-resource-by-name state (cons name dependents))
           ))))
@@ -2191,7 +2028,29 @@ enable-emit-constants [state]
 (defn has-tests? [{:keys [requires] :as rc}]
   (contains? requires 'cljs.test))
 
+;;-------------------------------------------------------------------
+;; Moved vars
 
+(def get-max-last-modified-for-source
+  query/get-max-last-modified-for-source)
+
+(def find-resource-by-js-name query/get-resource-by-js-name)
+
+(def find-dependent-names query/get-dependent-names)
+
+(def find-dependents-for-names query/get-dependents-for-names)
+
+(def find-resources-using-macro query/get-resources-using-macro)
+
+(def get-resource-for-provide query/get-resource-for-provide)
+
+(def get-deps-for-src query/get-deps-for-src)
+
+(def get-deps-for-ns query/get-deps-for-ns)
+
+(def get-deps-for-mains query/get-deps-for-mains)
+
+(def get-reloadable-source-paths query/get-reloadable-source-paths)
 
 (def is-cljc? util/cljc-file?)
 
