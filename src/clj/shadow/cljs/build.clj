@@ -26,7 +26,11 @@
             [loom.graph :as lg]
             [loom.alg :as la]
             [cognitect.transit :as transit]
-            [shadow.cljs.util :as util]
+            [shadow.cljs.util :as util :refer [ns->cljs-file
+                                               cljs-file->ns
+                                               file-basename
+                                               get-classpath
+                                               classpath-entries]]
             [clojure.pprint :refer (pprint)]
 
             [shadow.cljs.log :as log :refer [log-warning
@@ -78,14 +82,6 @@
 (defn compiler-state? [state]
   (true? (::is-compiler-state state)))
 
-(defn classpath-entries
-  "finds all js files on the classpath matching the path provided"
-  []
-  (let [sysp (System/getProperty "java.class.path")]
-    (if (.contains sysp ";")
-      (str/split sysp #";")
-      (str/split sysp #":"))))
-
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
   (or (= :cljs type) ;; cljs is always usable
       (seq provides) ;; provides something is useful
@@ -93,46 +89,9 @@
       (= "goog/base.js" (:name rc)) ;; doesnt provide/require anything but is useful
       ))
 
-(defn is-jar? [^String name]
-  (.endsWith (str/lower-case name) ".jar"))
 
-(defn is-cljs-file? [^String name]
-  (or (.endsWith (str/lower-case name) ".cljs")
-      (.endsWith (str/lower-case name) ".cljc")))
 
-(defn is-js-file? [^String name]
-  (.endsWith (str/lower-case name) ".js"))
 
-(defn is-cljs-resource? [^String name]
-  (or (is-cljs-file? name)
-      (is-js-file? name)
-      ))
-
-(defn cljs->js-name [name]
-  (str/replace name #"\.cljs$" ".js"))
-
-(defn ns->path [ns]
-  (-> ns
-      (str)
-      (str/replace #"\." "/")
-      (str/replace #"-" "_")))
-
-(defn ns->cljs-file [ns]
-  (-> ns
-      (ns->path)
-      (str ".cljs")))
-
-(defn cljs-file->ns [name]
-  (-> name
-      (str/replace #"\.cljs$" "")
-      (str/replace #"_" "-")
-      (str/replace #"[/\\]" ".")
-      (symbol)))
-
-(defn file-basename [^String path]
-  (let [idx (.lastIndexOf path "/")]
-    (.substring path (inc idx))
-    ))
 
 (defn conj-in [m k v]
   (update-in m k (fn [old] (conj old v))))
@@ -231,11 +190,11 @@
   [state {:keys [name] :as rc}]
   {:pre [(compiler-state? state)]}
   (cond
-    (is-js-file? name)
+    (util/js-file? name)
     (->> (assoc rc :type :js :js-name name)
          (add-goog-dependencies state))
 
-    (is-cljs-file? name)
+    (util/cljs-or-cljc-file? name)
     (let [rc (assoc rc :type :cljs :js-name (str/replace name #"\.clj(s|c)$" ".js"))]
       (if (= name "deps.cljs")
         rc
@@ -296,7 +255,7 @@ normalize-resource-name
         (persistent! result)
         (let [^JarEntry jar-entry (.nextElement entries)
               name (.getName jar-entry)]
-          (if (or (not (is-cljs-resource? name))
+          (if (or (not (util/cljs-resource? name))
                   (should-ignore-resource? state name))
             (recur result)
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
@@ -421,7 +380,7 @@ normalize-resource-name
         (->> (for [^File file (file-seq root)
                    :let [file (.getCanonicalFile file)
                          abs-path (.getCanonicalPath file)]
-                   :when (and (is-cljs-resource? abs-path)
+                   :when (and (util/cljs-resource? abs-path)
                               (not (.isHidden file)))
                    :let [name (-> abs-path
                                   (.substring root-len)
@@ -854,12 +813,6 @@ normalize-resource-name
        (number? last-modified)
        ))
 
-(defn is-cljc? [^String name]
-  (.endsWith name ".cljc"))
-
-(defn is-cljs? [^String name]
-  (.endsWith name ".cljs"))
-
 (defn merge-resource
   [{:keys [logger] :as state} {:keys [name provides url] :as src}]
   (cond
@@ -909,8 +862,8 @@ normalize-resource-name
     ;; now we need to handle conflicts for cljc/cljs files
     ;; only use cljs if both exist
     :valid-resource
-    (let [cljc? (is-cljc? name)
-          cljc-name (when (is-cljs? name)
+    (let [cljc? (util/cljc-file? name)
+          cljc-name (when (util/cljs-file? name)
                       (str/replace name #"cljs$" "cljc"))
           cljs-name (when cljc?
                       (str/replace name #"cljc$" "cljs"))]
@@ -921,7 +874,7 @@ normalize-resource-name
             state)
 
         ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
-        (and (is-cljs? name) (contains? (:sources state) cljc-name))
+        (and (util/cljs-file? name) (contains? (:sources state) cljc-name))
         (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
             (-> state
                 (assoc-in [:sources name] src)
@@ -939,7 +892,7 @@ normalize-resource-name
 
 (defn do-find-resources-in-path [state path]
   {:pre [(compiler-state? state)]}
-  (if (is-jar? path)
+  (if (util/jar? path)
     (find-jar-resources state path)
     (find-fs-resources state path)))
 
@@ -988,11 +941,12 @@ normalize-resource-name
    (find-resources-in-classpath state {:exclude [#"resources(/?)$"
                                                  #"classes(/?)$"
                                                  #"java(/?)$"]}))
-  ([state {:keys [exclude]}]
+  ([state {:keys [classpath exclude]}]
    (with-logged-time
      [(:logger state) "Find cljs resources in classpath"]
      (let [paths
-           (->> (classpath-entries)
+           (->> (or classpath (util/get-classpath))
+                (util/classpath-entries)
                 (remove #(should-exclude-classpath exclude %)))]
        (reduce merge-resources-in-path state paths)
        ))))
@@ -1795,14 +1749,9 @@ normalize-resource-name
 
   state)
 
-(defn directory? [^File x]
-  (and (instance? File x)
-       (or (not (.exists x))
-           (.isDirectory x))))
-
 (defn flush-unoptimized
   [{:keys [build-modules public-dir unoptimizable] :as state}]
-  {:pre [(directory? public-dir)]}
+  {:pre [(util/directory? public-dir)]}
 
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
@@ -1899,7 +1848,7 @@ normalize-resource-name
 
 (defn flush-unoptimized-compact
   [{:keys [build-modules public-dir unoptimizable cljs-runtime-path] :as state}]
-  {:pre [(directory? public-dir)]}
+  {:pre [(util/directory? public-dir)]}
 
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
@@ -2227,6 +2176,8 @@ enable-emit-constants [state]
        :logger (log/logger)}
 
       (add-closure-configurator closure-add-replace-constants-pass)
+(def directory? util/directory?)
+
       ))
 
 (defn watch-and-repeat! [state callback]
@@ -2244,3 +2195,7 @@ enable-emit-constants [state]
   (contains? requires 'cljs.test))
 
 
+
+(def is-cljc? util/cljc-file?)
+
+(def is-cljs? util/cljs-file?)

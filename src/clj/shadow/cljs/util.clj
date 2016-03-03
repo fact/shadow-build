@@ -5,6 +5,79 @@
             [cljs.env :as env]
             [clojure.pprint :refer (pprint)]))
 
+;; Paths
+
+(defn cljs->js-name [name]
+  (str/replace name #"\.cljs$" ".js"))
+
+(defn ns->path [ns]
+  (-> ns
+      (str)
+      (str/replace #"\." "/")
+      (str/replace #"-" "_")))
+
+(defn ns->cljs-file [ns]
+  (-> ns
+      (ns->path)
+      (str ".cljs")))
+
+(defn cljs-file->ns [name]
+  (-> name
+      (str/replace #"\.cljs$" "")
+      (str/replace #"_" "-")
+      (str/replace #"[/\\]" ".")
+      (symbol)))
+
+(defn file-basename [^String path]
+  (let [idx (.lastIndexOf path "/")]
+    (.substring path (inc idx))))
+
+;; Files and Resources
+
+(defn cljs-file? [^String name]
+  (let [name (str/lower-case name)]
+    (.endsWith name ".cljs")))
+
+(defn cljc-file? [^String name]
+  (let [name (str/lower-case name)]
+    (.endsWith name ".cljc")))
+
+(defn cljs-or-cljc-file? [name]
+  (or (cljs-file? name)
+      (cljc-file? name)))
+
+(defn js-file? [^String name]
+  (.endsWith (str/lower-case name) ".js"))
+
+(defn cljs-resource? [^String name]
+  (or (cljs-or-cljc-file? name)
+      (js-file? name)))
+
+(defn directory? [^File x]
+  (and (instance? File x)
+       (or (not (.exists x))
+           (.isDirectory x))))
+
+;; Classpath
+
+(defn get-classpath []
+  (System/getProperty "java.class.path"))
+
+(defn classpath-entries
+  "finds all js files on the classpath matching the path provided"
+  [classpath]
+  (if (.contains classpath ";")
+    (str/split classpath #";")
+    (str/split classpath #":")))
+
+;; Jars
+
+(defn jar? [^String name]
+  (.endsWith (str/lower-case name) ".jar"))
+
+
+;; Parsing and Loading
+
 (def require-option-keys
   #{:as
     :refer
