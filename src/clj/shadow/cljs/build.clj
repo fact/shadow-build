@@ -28,6 +28,7 @@
             [loom.alg :as la]
             [shadow.cljs.build.cache :as cache]
             [shadow.cljs.build.closure :as closure]
+            [shadow.cljs.build.macro :as macro]
             [shadow.cljs.build.resource.common :as common]
             [shadow.cljs.build.resource.file :as file]
             [shadow.cljs.build.resource.jar :as jar]
@@ -64,11 +65,6 @@
       :ns name
       :ns-info ns-info
       }))
-
-(defn set-conj [x y]
-  (if x
-    (conj x y)
-    #{y}))
 
 (defn error-report
   ([state e]
@@ -374,56 +370,11 @@
   ;; since we compile in dep order 'cljs.core will always be compiled before any other CLJS
   state)
 
-(defn discover-macros [{:keys [logger] :as state}]
-  ;; build {macro-ns #{used-by-source-by-name ...}}
-  (let [macro-info
-        (->> (:sources state)
-             (vals)
-             (filter #(seq (:macros %)))
-             (reduce (fn [macro-info {:keys [macros name]}]
-                       (reduce (fn [macro-info macro-ns]
-                                 (update-in macro-info [macro-ns] set-conj name))
-                         macro-info
-                         macros))
-               {})
-             (map (fn [[macro-ns used-by]]
-                    (let [name (str (ns->path macro-ns) ".clj")
-                          url (io/resource name)
-                          ;; FIXME: clean this up, must look for .clj and .cljc
-                          [name url] (if url
-                                       [name url]
-                                       (let [name (str name "c")]
-                                         [name (io/resource name)]))]
-                      #_(when-not url (log-warning logger (format "Macro namespace: %s not found, required by %s" macro-ns used-by)))
-                      {:ns macro-ns
-                       :used-by used-by
-                       :name name
-                       :url url})))
-             ;; always get last modified for macro source
-             (map (fn [{:keys [url] :as info}]
-                    (if (nil? url)
-                      info
-                      (let [con (.openConnection url)]
-                        (assoc info :last-modified (.getLastModified con)))
-                      )))
-             ;; get file (if not in jar)
-             (map (fn [{:keys [^URL url] :as info}]
-                    (if (nil? url)
-                      info
-                      (if (not= "file" (.getProtocol url))
-                        info
-                        (let [file (io/file (.getPath url))]
-                          (assoc info :file file))))))
-             (map (juxt :ns identity))
-             (into {}))]
-    (assoc state :macros macro-info)
-    ))
-
 (defn finalize-config
   "should be called AFTER all resources have been discovers (ie. after find-resources...)"
   [state]
   (-> state
-      (discover-macros)
+      (macro/discover-macros)
       (assoc :configured true
              :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
                               (slurp imul))
@@ -1100,7 +1051,7 @@
   (as-> state $state
     (reduce reload-modified-resource $state scan-results)
     ;; FIXME: this is kinda ugly but need a way to discover newly required macros
-    (discover-macros $state)
+    (macro/discover-macros $state)
     ))
 
 
@@ -1230,6 +1181,10 @@ enable-emit-constants [state]
 
 (def write-jar-manifest jar/write-jar-manifest)
 
+;; Macros
+
+(def discover-macros macro/discover-macros)
+
 ;; Cache
 
 (def get-cache-file-for-rc cache/get-cache-file-for-rc)
@@ -1291,7 +1246,7 @@ enable-emit-constants [state]
   (as-> state $state
     (reduce reload-modified-resource $state scan-results)
     ;; FIXME: this is kinda ugly but need a way to discover newly required macros
-    (discover-macros $state)
+    (macro/discover-macros $state)
     ))
 
 (defn wait-and-reload!
