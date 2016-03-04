@@ -656,9 +656,6 @@ normalize-resource-name
     (find-jar-resources state path)
     (find-fs-resources state path)))
 
-(defn should-exclude-classpath [exclude path]
-  (boolean (some #(re-find % path) exclude)))
-
 (defn merge-resources-in-path
   ([state path]
    (merge-resources-in-path state path {:reloadable true}))
@@ -694,6 +691,9 @@ normalize-resource-name
              state)
          (merge-resources-in-path state path opts))
        ))))
+
+(defn should-exclude-classpath [exclude path]
+  (boolean (some #(re-find % path) exclude)))
 
 (defn find-resources-in-classpath
   "finds all cljs resources in the classpath (ignores resources)"
@@ -977,7 +977,6 @@ normalize-resource-name
                          :externs-source externs-source
                          :last-modified 0
                          }))
-
 (defn make-runtime-setup [{:keys [runtime] :as state}]
   (let [src (str/join "\n" [(case (:print-fn runtime)
                               ;; Browser
@@ -1081,7 +1080,7 @@ normalize-resource-name
                    (let [task-fn (bound-fn [] (par-compile-one state ready compiled errors source-name))]
                      (.submit exec ^Callable task-fn)))
                  (doall) ;; force submit all, then deref
-                 (into [] (map deref)))]
+                 (mapv deref))]
 
         ;; FIXME: might deadlock here if any of the derefs fail
         (.shutdown exec)
@@ -1465,27 +1464,6 @@ normalize-resource-name
   (concat (scan-for-modified-files state)
     (scan-for-new-files state)))
 
-(defn wait-for-modified-files!
-  "blocks current thread waiting for modified files
-  return resource maps with a :scan key which is either :new :modified :delete"
-  [{:keys [logger sources] :as initial-state}]
-  (log-progress logger "Waiting for modified files ...")
-  (loop [state initial-state
-         i 0]
-
-    ;; don't scan for new files too frequently
-    ;; quite a bit more expensive than just checking a known file
-
-    (let [modified (scan-for-modified-files state)
-          modified (if (zero? (mod i 5))
-                     (concat modified (scan-for-new-files state))
-                     modified)]
-      (if (seq modified)
-        modified
-        (do (Thread/sleep 500)
-            (recur state
-              (inc i)))))))
-
 (defn reload-modified-resource
   [{:keys [logger] :as state} {:keys [scan name file ns] :as rc}]
   (case scan
@@ -1523,11 +1501,8 @@ normalize-resource-name
     (discover-macros $state)
     ))
 
-(defn wait-and-reload!
-  "wait for modified files, reload them and return reloaded state"
-  [state]
-  (->> (wait-for-modified-files! state)
-       (reload-modified-files! state)))
+
+;;-------------------------------------------------------------------
 
 ;; configuration stuff
 (defn ^{:deprecated "moved to a closure pass, always done on closure optimize"}
@@ -1587,17 +1562,6 @@ enable-emit-constants [state]
        closure/closure-add-replace-constants-pass)
 
       ))
-
-(defn watch-and-repeat! [state callback]
-  (loop [state (callback state [])]
-    (let [modified (wait-for-modified-files! state)
-          state (reload-modified-files! state modified)]
-      (recur (try
-               (callback state (mapv :name modified))
-               (catch Exception e
-                 (println (str "COMPILATION FAILED: " e))
-                 (.printStackTrace e)
-                 state))))))
 
 (defn has-tests? [{:keys [requires] :as rc}]
   (contains? requires 'cljs.test))
@@ -1681,3 +1645,52 @@ enable-emit-constants [state]
 (def foreign-js-source-for-mod closure/foreign-js-source-for-mod)
 
 (def flush-modules-to-disk closure/flush-optimized-modules-to-disk!)
+
+;;-------------------------------------------------------------------
+;; Watch
+
+(defn wait-for-modified-files!
+  "blocks current thread waiting for modified files
+  return resource maps with a :scan key which is either :new :modified :delete"
+  [{:keys [logger sources] :as initial-state}]
+  (log-progress logger "Waiting for modified files ...")
+  (loop [state initial-state
+         i 0]
+
+    ;; don't scan for new files too frequently
+    ;; quite a bit more expensive than just checking a known file
+
+    (let [modified (scan-for-modified-files state)
+          modified (if (zero? (mod i 5))
+                     (concat modified (scan-for-new-files state))
+                     modified)]
+      (if (seq modified)
+        modified
+        (do (Thread/sleep 500)
+            (recur state
+              (inc i)))))))
+
+(defn reload-modified-files!
+  [state scan-results]
+  (as-> state $state
+    (reduce reload-modified-resource $state scan-results)
+    ;; FIXME: this is kinda ugly but need a way to discover newly required macros
+    (discover-macros $state)
+    ))
+
+(defn wait-and-reload!
+  "wait for modified files, reload them and return reloaded state"
+  [state]
+  (->> (wait-for-modified-files! state)
+       (reload-modified-files! state)))
+
+(defn watch-and-repeat! [state callback]
+  (loop [state (callback state [])]
+    (let [modified (wait-for-modified-files! state)
+          state (reload-modified-files! state modified)]
+      (recur (try
+               (callback state (mapv :name modified))
+               (catch Exception e
+                 (println (str "COMPILATION FAILED: " e))
+                 (.printStackTrace e)
+                 state))))))
