@@ -28,6 +28,8 @@
             [loom.alg :as la]
             [shadow.cljs.build.cache :as cache]
             [shadow.cljs.build.closure :as closure]
+            [shadow.cljs.build.resource.common :as common]
+            [shadow.cljs.build.resource.file :as file]
             [shadow.cljs.build.resource.jar :as jar]
             [shadow.cljs.build.internal :as internal
              :refer [compiler-state?]]
@@ -175,7 +177,7 @@
                  (comp/emit ast))
 
         compile-state (if (= :ns (:op ast))
-                        (update-rc-from-ns state compile-state ast)
+                        (common/update-rc-from-ns state compile-state ast)
                         compile-state)]
     (update-in compile-state [:js] str ast-js)
     ))
@@ -276,8 +278,8 @@
 (defn do-find-resources-in-path [state path]
   {:pre [(compiler-state? state)]}
   (if (util/jar? path)
-    (find-jar-resources state path)
-    (find-fs-resources state path)))
+    (jar/find-jar-resources state path)
+    (file/find-fs-resources state path)))
 
 (defn merge-resources-in-path
   ([state path]
@@ -295,7 +297,7 @@
                                                           :file file
                                                           :path abs-path))
                state)]
-         (merge-resources state resources))))))
+         (common/merge-resources state resources))))))
 
 (defn find-resources
   "finds cljs resources in the given path"
@@ -587,19 +589,21 @@
          (string? externs-source)
          (seq externs-source)]}
 
-  (merge-resource state {:type :js
-                         :foreign true
-                         :name name
-                         :js-name name
-                         :provides provides
-                         :requires requires
-                         ;; FIXME: should allow getting a vector as provides instead
-                         :require-order (into [] requires)
-                         :output js-source
-                         :input (atom js-source)
-                         :externs-source externs-source
-                         :last-modified 0
-                         }))
+  (common/merge-resource state
+                         {:type :js
+                          :foreign true
+                          :name name
+                          :js-name name
+                          :provides provides
+                          :requires requires
+                          ;; FIXME: should allow getting a vector as provides instead
+                          :require-order (into [] requires)
+                          :output js-source
+                          :input (atom js-source)
+                          :externs-source externs-source
+                          :last-modified 0
+                          }))
+
 (defn make-runtime-setup [{:keys [runtime] :as state}]
   (let [src (str/join "\n" [(case (:print-fn runtime)
                               ;; Browser
@@ -618,7 +622,7 @@
 
 
 (defn generate-output-for-source [state {:keys [name type output warnings] :as src}]
-  {:pre [(valid-resource? src)]}
+  {:pre [(common/valid-resource? src)]}
   (if (and (seq output)
            ;; always recompile files with warnings
            (not (seq warnings)))
@@ -730,7 +734,7 @@
 (defn prepare-compile [state]
   (let [runtime-setup (make-runtime-setup state)]
     (-> (finalize-config state)
-        (merge-resource runtime-setup)
+        (common/merge-resource runtime-setup)
         )))
 
 (defn compile-modules
@@ -985,31 +989,6 @@
   ;; return unmodified state
   state)
 
-(defn reload-source [{:keys [url] :as rc}]
-  (assoc rc :input (delay (slurp url))))
-
-(defn reset-resource-by-name [state name]
-  (let [{:keys [^File file] :as rc} (get-in state [:sources name])]
-    ;; only resource that have a file associated with them can be reloaded (?)
-    (if (nil? file)
-      state
-      (let [new-rc (-> rc
-                       (dissoc :ns :ns-info :requires :require-order :provides :output :compiled :compiled-at)
-                       (reload-source)
-                       (as-> src'
-                         (inspect-resource state src'))
-                       (cond-> file
-                         (assoc :last-modified (.lastModified file))))]
-        (-> state
-            (unmerge-resource name)
-            (merge-resource new-rc))))
-    ))
-
-(defn reset-resources-using-macro [state macro-ns]
-  (let [names (query/get-resources-using-macro state macro-ns)]
-    (reduce reset-resource-by-name state names)
-    ))
-
 (defn scan-for-new-files
   "scans the reloadable paths for new files
 
@@ -1022,7 +1001,7 @@
                                 [source-path name]))
                          (into #{}))]
     (->> reloadable-paths
-         (mapcat #(find-fs-resources state %))
+         (mapcat #(file/find-fs-resources state %))
          (remove (fn [{:keys [source-path name]}]
                    (contains? known-files [source-path name])))
          (map #(assoc % :scan :new))
@@ -1103,17 +1082,17 @@
 
     :delete
     (do (log-progress logger (format "[RELOAD] del: %s" file))
-        (unmerge-resource state (:name rc)))
+        (common/unmerge-resource state (:name rc)))
 
     :new
     (do (log-progress logger (format "[RELOAD] new: %s" file))
-        (merge-resource state (inspect-resource state (dissoc rc :scan))))
+        (common/merge-resource state (common/inspect-resource state (dissoc rc :scan))))
 
     :modified
     (do (log-progress logger (format "[RELOAD] mod: %s" file))
         (let [dependents (query/get-dependent-names state ns)]
           ;; modified files also trigger recompile of all its dependents
-          (reduce reset-resource-by-name state (cons name dependents))
+          (reduce common/reset-resource-by-name state (cons name dependents))
           ))))
 
 (defn reload-modified-files!
@@ -1231,6 +1210,19 @@ enable-emit-constants [state]
 
 (def get-closure-compiler internal/get-closure-compiler)
 
+
+;; Resource
+
+(def merge-resource common/merge-resource)
+
+(def merge-resources common/merge-resources)
+
+(def should-ignore-resource? common/should-ignore-resource?)
+
+;; File
+
+(def make-fs-resource file/make-fs-resource)
+
 ;; Jar Manifest
 
 (def read-jar-manifest jar/read-jar-manifest)
@@ -1268,6 +1260,7 @@ enable-emit-constants [state]
 (def foreign-js-source-for-mod closure/foreign-js-source-for-mod)
 
 (def flush-modules-to-disk closure/flush-optimized-modules-to-disk!)
+
 
 ;;-------------------------------------------------------------------
 ;; Watch
