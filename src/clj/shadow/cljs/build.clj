@@ -21,6 +21,7 @@
             [cljs.env :as env]
             [cljs.tagged-literals :as tags]
             [cljs.util :as cljs-util]
+            [clojure.pprint :refer (pprint)]
             [clojure.repl :refer (pst)]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
@@ -34,19 +35,14 @@
             [shadow.cljs.build.resource.jar :as jar]
             [shadow.cljs.build.internal :as internal
              :refer [compiler-state?]]
+            [shadow.cljs.log :as log]
             [shadow.cljs.query :as query]
             [shadow.cljs.util :as util :refer [ns->cljs-file
                                                cljs-file->ns
                                                file-basename
                                                get-classpath
                                                classpath-entries]]
-            [clojure.pprint :refer (pprint)]
 
-            [shadow.cljs.log :as log :refer [log-warning
-                                             log-progress
-                                             log-time-start
-                                             log-time-end
-                                             with-logged-time]]
             ))
 
 ;; (set! *warn-on-reflection* true)
@@ -223,7 +219,7 @@
 
   (binding [ana/*cljs-static-fns* static-fns]
     (let [source @input]
-      (with-logged-time
+      (log/with-logged-time
         [(:logger state) (format "Compile CLJS: \"%s\"" name)]
         (let [{:keys [js ns requires require-order source-map warnings]}
               (cond
@@ -300,7 +296,7 @@
   ([state path]
    (find-resources state path {:reloadable true}))
   ([{:keys [logger] :as state} path opts]
-   (with-logged-time
+   (log/with-logged-time
      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
      (let [file (io/file path)
            abs-path (.getCanonicalPath file)]
@@ -308,7 +304,7 @@
          (throw (ex-info (format "\"%s\" does not exist" path) {:path path})))
 
        (if (contains? (:source-paths state) abs-path)
-         (do (log-progress logger (format "path \"%s\" already on classpath, skipped" path))
+         (do (log/log-progress logger (format "path \"%s\" already on classpath, skipped" path))
              state)
          (merge-resources-in-path state path opts))
        ))))
@@ -323,7 +319,7 @@
                                                  #"classes(/?)$"
                                                  #"java(/?)$"]}))
   ([state {:keys [classpath exclude]}]
-   (with-logged-time
+   (log/with-logged-time
      [(:logger state) "Find cljs resources in classpath"]
      (let [paths
            (->> (or classpath (util/get-classpath))
@@ -426,7 +422,7 @@
 (defn flush-to-disk
   "flush all generated sources to disk, not terribly useful, use flush-unoptimized to include source maps"
   [{:keys [work-dir sources] :as state}]
-  (with-logged-time
+  (log/with-logged-time
     [(:logger state) (format "Flushing to disk")]
     (doseq [{:keys [type name compiled] :as src} (vals sources)
             :when (and (= :cljs type)
@@ -517,9 +513,9 @@
                vals
                (sort-by :name)
                (filter #(seq (:warnings %))))]
-    (log-warning logger (format "WARNINGS: %s (%d)" name (count warnings)))
+    (log/log-warning logger (format "WARNINGS: %s (%d)" name (count warnings)))
     (doseq [warning warnings]
-      (log-warning logger warning)
+      (log/log-warning logger warning)
       ))
   state)
 
@@ -643,7 +639,7 @@
   "compile files in parallel, files MUST be in dependency order and ALL dependencies must be present
    this cannot do a partial incremental compile"
   [{:keys [n-compile-threads logger] :as state} source-names]
-  (log-progress logger (format "Compiling with %d threads" n-compile-threads))
+  (log/log-progress logger (format "Compiling with %d threads" n-compile-threads))
   (with-redefs [ana/parse shadow-parse]
     (with-compiler-env state
       (ana/load-core)
@@ -690,7 +686,7 @@
 
 (defn compile-modules
   [{:keys [n-compile-threads] :as state}]
-  (with-logged-time
+  (log/with-logged-time
     [(:logger state) "Compiling Modules ..."]
     (let [state (prepare-compile state)
           state (reduce do-analyze-module state (-> state :modules (vals)))
@@ -787,12 +783,12 @@
 
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
-  (with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing sources"]
 
     (flush-sources-by-name state (mapcat :sources build-modules)))
 
-  (with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing unoptimized modules"]
 
     (closure/flush-manifest public-dir build-modules)
@@ -884,12 +880,12 @@
 
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
-  (with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing sources"]
 
     (flush-sources-by-name state (mapcat :sources build-modules)))
 
-  (with-logged-time
+  (log/with-logged-time
     [(:logger state) "Flushing unoptimized compact modules"]
 
     (closure/flush-manifest public-dir build-modules)
@@ -1021,26 +1017,26 @@
   [{:keys [logger] :as state} {:keys [scan name file ns] :as rc}]
   (case scan
     :macro
-    (do (log-progress logger (format "[RELOAD] macro: %s" ns))
+    (do (log/log-progress logger (format "[RELOAD] macro: %s" ns))
         (try
           ;; FIXME: :reload enough probably?
           (require ns :reload-all)
           (catch Exception e
             (let [st (with-out-str (pst e))]
-              (log-warning logger
+              (log/log-warning logger
                 (format "MACRO-RELOAD FAILED %s!%n%s" name st)))))
         (assoc-in state [:macros ns] (dissoc rc :scan)))
 
     :delete
-    (do (log-progress logger (format "[RELOAD] del: %s" file))
+    (do (log/log-progress logger (format "[RELOAD] del: %s" file))
         (common/unmerge-resource state (:name rc)))
 
     :new
-    (do (log-progress logger (format "[RELOAD] new: %s" file))
+    (do (log/log-progress logger (format "[RELOAD] new: %s" file))
         (common/merge-resource state (common/inspect-resource state (dissoc rc :scan))))
 
     :modified
-    (do (log-progress logger (format "[RELOAD] mod: %s" file))
+    (do (log/log-progress logger (format "[RELOAD] mod: %s" file))
         (let [dependents (query/get-dependent-names state ns)]
           ;; modified files also trigger recompile of all its dependents
           (reduce common/reset-resource-by-name state (cons name dependents))
@@ -1216,6 +1212,18 @@ enable-emit-constants [state]
 
 (def flush-modules-to-disk closure/flush-optimized-modules-to-disk!)
 
+;; Log
+
+(def log-warning log/log-warning)
+
+(def log-progress log/log-progress)
+
+(def log-time-start log/log-time-start)
+
+(def log-time-end log/log-time-end)
+
+(def logger log/logger)
+
 
 ;;-------------------------------------------------------------------
 ;; Watch
@@ -1224,7 +1232,7 @@ enable-emit-constants [state]
   "blocks current thread waiting for modified files
   return resource maps with a :scan key which is either :new :modified :delete"
   [{:keys [logger sources] :as initial-state}]
-  (log-progress logger "Waiting for modified files ...")
+  (log/log-progress logger "Waiting for modified files ...")
   (loop [state initial-state
          i 0]
 
