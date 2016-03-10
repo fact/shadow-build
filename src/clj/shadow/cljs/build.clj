@@ -33,16 +33,10 @@
             [shadow.cljs.build.resource.common :as common]
             [shadow.cljs.build.resource.file :as file]
             [shadow.cljs.build.resource.jar :as jar]
-            [shadow.cljs.build.internal :as internal
-             :refer [compiler-state?]]
+            [shadow.cljs.build.internal :as internal]
             [shadow.cljs.log :as log]
             [shadow.cljs.query :as query]
-            [shadow.cljs.util :as util :refer [ns->cljs-file
-                                               cljs-file->ns
-                                               file-basename
-                                               get-classpath
-                                               classpath-entries]]
-
+            [shadow.cljs.util :as util]
             ))
 
 ;; (set! *warn-on-reflection* true)
@@ -268,7 +262,7 @@
 ;;; COMPILE STEPS
 
 (defn do-find-resources-in-path [state path]
-  {:pre [(compiler-state? state)]}
+  {:pre [(internal/compiler-state? state)]}
   (if (util/jar? path)
     (jar/find-jar-resources state path)
     (file/find-fs-resources state path)))
@@ -678,7 +672,7 @@
             (assoc :compiled @compiled))))))
 
 
-(defn prepare-compile [state]
+(defn- prepare-compile [state]
   (let [runtime-setup (make-runtime-setup state)]
     (-> (finalize-config state)
         (common/merge-resource runtime-setup)
@@ -758,7 +752,7 @@
               (let [source-map-name (str js-name ".map")]
                 (spit (io/file public-dir cljs-runtime-path source-map-name)
                   (sm/encode {name source-map} {:file js-name}))
-                (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true))))
+                (spit js-target (str "//# sourceMappingURL=" (util/file-basename source-map-name) "?r=" (rand)) :append true))))
 
           ;; spit original source, cljs needed for source maps
           (spit target @input))
@@ -1064,53 +1058,73 @@ enable-emit-constants [state]
 (defn set-build-options [state opts]
   (merge state opts))
 
-(defn init-state []
-  (-> {:compiler-env {} ;; will become env/*compiler*
+(def base-configuration
+  {:compiler-env {} ;; will become env/*compiler*
 
-       :ignore-patterns #{#"^node_modules/"
-                          #"^goog/demos/"
-                          #".aot.js$"
-                          #"_test.js$"}
+   :ignore-patterns #{#"^node_modules/"
+                      #"^goog/demos/"
+                      #".aot.js$"
+                      #"_test.js$"}
 
-       internal/compiler-state true
-       internal/closure-compiler (closure/make-closure-compiler)
+   internal/compiler-state true
 
-       :runtime {:print-fn :console}
-       :macros-loaded #{}
-       :use-file-min true
+   :runtime {:print-fn :console}
+   :macros-loaded #{}
+   :use-file-min true
 
-       :static-fns true
-       :elide-asserts false
+   :static-fns true
+   :elide-asserts false
 
-       :closure-configurators []
+   :closure-configurators []
 
-       ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
-       ;; this used to be just "src" but that is too generic and easily breaks something
-       ;; if public-dir is equal to the current working directory
-       :cljs-runtime-path "cljs-runtime"
+   ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
+   ;; this used to be just "src" but that is too generic and easily breaks something
+   ;; if public-dir is equal to the current working directory
+   :cljs-runtime-path "cljs-runtime"
 
-       :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v3")]
-                             (io/make-parents dir)
-                             dir)
-       :cache-dir (io/file "target" "shadow-build" "cljs-cache")
-       :cache-level :all
+   :manifest-cache-dir "target/shadow-build/jar-manifest/v3"
+   :cache-dir "target/shadow-build/cljs-cache"
+   :cache-level :all
 
-       :public-dir (io/file "public" "js")
-       :public-path "js"
+   :public-dir "public/js"
+   :public-path "js"
 
-       :optimizations :none
-       :n-compile-threads (.. Runtime getRuntime availableProcessors)
+   :optimizations :none
+   :n-compile-threads (.. Runtime getRuntime availableProcessors)
 
-       :source-paths {}
-       :closure-defines {"goog.DEBUG" false
-                         "goog.LOCALE" "en"}
+   :source-paths {}
+   :closure-defines {"goog.DEBUG" false
+                     "goog.LOCALE" "en"}})
 
-       :logger (log/logger)}
+(defn configure [overrides]
+  (merge base-configuration overrides))
 
-      (closure/add-closure-configurator
-       closure/closure-add-replace-constants-pass)
+(defn- ->file [path]
+  (cond
+   (instance? java.io.File path) path
+   (string? path) (io/file path)
+   :else
+   (throw (ex-info "Path must be a string or instance of java.io.File"
+                   {:path path}))))
 
-      ))
+(defn- ->file-with-parents [path]
+  (let [file (->file path)]
+    (io/make-parents file)
+    file))
+
+(defn init-state!
+  ([] (init-state! nil))
+  ([overrides]
+   (-> (configure overrides)
+       (update :cache-dir ->file)
+       (update :public-dir ->file)
+       (update :manifest-cache-dir ->file-with-parents)
+       (update :logger #(or % (log/logger)))
+       (assoc internal/closure-compiler (closure/make-closure-compiler))
+       (closure/add-closure-configurator
+        closure/closure-add-replace-constants-pass))))
+
+(def init-state init-state!)
 
 (defn has-tests? [{:keys [requires] :as rc}]
   (contains? requires 'cljs.test))
