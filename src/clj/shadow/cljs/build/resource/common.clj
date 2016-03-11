@@ -242,19 +242,19 @@ normalize-resource-name
 (defn merge-resource
   [{:keys [logger] :as state} {:keys [name provides url] :as src}]
   (cond
-    (not (valid-resource? src))
-    (do (log-warning logger (format "ERROR in resource: %s via %s" name url))
-        state)
+   (not (valid-resource? src))
+   (do (log-warning logger (format "ERROR in resource: %s via %s" name url))
+     state)
 
-    ;; no not merge files that don't have the expected path for their ns
-    ;; not really needed but cljs does this, so we should enforce it as well
-    (and (= :cljs (:type src))
-         (symbol? (:ns src))
-         (let [expected-name (util/ns->cljs-file (:ns src))
-               expected-cljc (str/replace expected-name #".cljs$" ".cljc")]
-           (not (or (= name expected-name)
-                    (= name expected-cljc)
-                    ))))
+   ;; no not merge files that don't have the expected path for their ns
+   ;; not really needed but cljs does this, so we should enforce it as well
+   (and (= :cljs (:type src))
+        (symbol? (:ns src))
+        (let [expected-name (util/ns->cljs-file (:ns src))
+              expected-cljc (str/replace expected-name #".cljs$" ".cljc")]
+          (not (or (= name expected-name)
+                   (= name expected-cljc)
+                   ))))
 
    (do (log-warning
         logger
@@ -264,54 +264,54 @@ normalize-resource-name
                 (str (util/ns->cljs-file (:ns src)) " (or .cljc)")
                 name
                 ))
-        ;; still want to remember the resource so it doesn't get detected as new all the time
-        ;; remove all provides, otherwise it might end up being used despite the invalid name
-        ;; enforce this behavior since the warning might get overlooked easily
-        (let [invalid-src (assoc src
-                            :provides #{}
-                            :requires #{}
-                            :require-order [])]
-          (assoc-in state [:sources name] invalid-src)))
+     ;; still want to remember the resource so it doesn't get detected as new all the time
+     ;; remove all provides, otherwise it might end up being used despite the invalid name
+     ;; enforce this behavior since the warning might get overlooked easily
+     (let [invalid-src (assoc src
+                         :provides #{}
+                         :requires #{}
+                         :require-order [])]
+       (assoc-in state [:sources name] invalid-src)))
 
-    ;; do not merge files that are already present from a different source path
-    (let [existing (get-in state [:sources name])]
-      (and existing
-           (or (not= (:source-path existing)
-                     (:source-path src))
-               (not= (:url existing)
-                     (:url src)))))
-    (do (log-warning logger (format
-                              "duplicate file on classpath \"%s\" (using A)%nA: %s%nB: %s"
-                              name
-                              (get-in state [:sources name :source-path])
-                              (:source-path src)))
+   ;; do not merge files that are already present from a different source path
+   (let [existing (get-in state [:sources name])]
+     (and existing
+          (or (not= (:source-path existing)
+                    (:source-path src))
+              (not= (:url existing)
+                    (:url src)))))
+   (do (log-warning logger (format
+                            "duplicate file on classpath \"%s\" (using A)%nA: %s%nB: %s"
+                            name
+                            (get-in state [:sources name :source-path])
+                            (:source-path src)))
+     state)
+
+   ;; now we need to handle conflicts for cljc/cljs files
+   ;; only use cljs if both exist
+   :valid-resource
+   (let [cljc? (util/cljc-file? name)
+         cljc-name (when (util/cljs-file? name)
+                     (str/replace name #"cljs$" "cljc"))
+         cljs-name (when cljc?
+                     (str/replace name #"cljc$" "cljs"))]
+     (cond
+      ;; don't merge .cljc file if a .cljs of the same name exists
+      (and cljc? (contains? (:sources state) cljs-name))
+      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
         state)
 
-    ;; now we need to handle conflicts for cljc/cljs files
-    ;; only use cljs if both exist
-    :valid-resource
-    (let [cljc? (util/cljc-file? name)
-          cljc-name (when (util/cljs-file? name)
-                      (str/replace name #"cljs$" "cljc"))
-          cljs-name (when cljc?
-                      (str/replace name #"cljc$" "cljs"))]
-      (cond
-        ;; don't merge .cljc file if a .cljs of the same name exists
-        (and cljc? (contains? (:sources state) cljs-name))
-        (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
-            state)
-
-        ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
-        (and (util/cljs-file? name) (contains? (:sources state) cljc-name))
-        (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
-            (-> state
-                (assoc-in [:sources name] src)
-                (merge-provides name provides)))
-
-        :no-conflict
+      ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
+      (and (util/cljs-file? name) (contains? (:sources state) cljc-name))
+      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
         (-> state
             (assoc-in [:sources name] src)
-            (merge-provides name provides))))))
+            (merge-provides name provides)))
+
+      :no-conflict
+      (-> state
+          (assoc-in [:sources name] src)
+          (merge-provides name provides))))))
 
 (defn merge-resources [state srcs]
   (reduce merge-resource state srcs))
