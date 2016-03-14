@@ -1036,6 +1036,14 @@
           (reduce common/reset-resource-by-name state (cons name dependents))
           ))))
 
+(defn reload-modified-files!
+  [state scan-results]
+  (as-> state $state
+    (reduce reload-modified-resource $state scan-results)
+    ;; FIXME: this is kinda ugly but need a way to discover newly required macros
+    (macro/discover-macros $state)
+    ))
+
 ;;-------------------------------------------------------------------
 
 ;; configuration stuff
@@ -1253,14 +1261,6 @@ enable-emit-constants [state]
         (do (Thread/sleep 500)
             (recur state
               (inc i)))))))
-
-(defn reload-modified-files!
-  [state scan-results]
-  (as-> state $state
-    (reduce reload-modified-resource $state scan-results)
-    ;; FIXME: this is kinda ugly but need a way to discover newly required macros
-    (macro/discover-macros $state)
-    ))
 
 (defn wait-and-reload!
   "wait for modified files, reload them and return reloaded state"
