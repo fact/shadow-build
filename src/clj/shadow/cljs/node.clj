@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [flush compile])
   (:require [shadow.cljs.build :as cljs]
             [shadow.cljs.log :as log]
+            [shadow.cljs.test :as test]
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
@@ -219,23 +220,15 @@
         (cljs/reset-modules)
         (cljs/configure-module :test-runner ['test-runner] #{}))))
 
-(defn find-all-test-namespaces [state]
-  (->> (get-in state [:sources])
-       (vals)
-       (remove :jar)
-       (filter cljs/has-tests?)
-       (map :ns)
-       (into [])))
 
 (defn make-test-runner
   ([state]
-   (make-test-runner state (find-all-test-namespaces state)))
+   (make-test-runner state (test/find-all-test-namespaces state)))
   ([state test-namespaces]
    (-> state
        (setup-test-runner test-namespaces)
        (cljs/compile-modules)
        (flush))))
-
 
 (defn to-source-name [state source-name]
   (cond
@@ -249,16 +242,8 @@
 
 (defn execute-affected-tests!
   [{:keys [logger] :as state} source-names]
-  (let [source-names (->> source-names
-                          (map #(to-source-name state %))
-                          (into []))
-        test-namespaces
-        (->> (concat source-names (cljs/find-dependents-for-names state source-names))
-             (filter #(cljs/has-tests? (get-in state [:sources %])))
-             (map #(get-in state [:sources % :ns]))
-             (distinct)
-             (into []))]
-
+  (let [source-names (mapv (partial to-source-name state) source-names)
+        test-namespaces (test/find-affected-test-namespaces source-names)]
     (if (empty? test-namespaces)
       (do (log/log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
           state)
@@ -283,3 +268,5 @@
                   (execute! "node" :script))]
     (System/exit (::exit-code state))))
 
+
+(def find-all-test-namespaces test/find-all-test-namespaces)
