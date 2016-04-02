@@ -3,6 +3,93 @@
             [clojure.string :as str]
             [shadow.cljs.build.internal :refer [compiler-state?]]))
 
+
+;;-------------------------------------------------------------------
+;; Accessors
+
+(defn sources
+  [state]
+  (vals (:sources state)))
+
+(defn source-names
+  [state]
+  (keys (:sources state)))
+
+(defn source-paths
+  [state]
+  (vals (:source-paths state)))
+
+;;-------------------------------------------------------------------
+;; Query Modifiers and Relations
+
+(def remove-jar-xf
+  (remove :from-jar))
+
+(def namespace-xf
+  (map :ns))
+
+(def name-xf
+  (map :name))
+
+(defn source-name->source
+  [state source-name]
+  (get-in state [:sources source-name]))
+
+(defn source-name->ns-symbol
+  [state source-name]
+  (get-in state [:sources source-name :provides]))
+
+;;-------------------------------------------------------------------
+;; Joins
+
+(defn source-name->ns-symbol-xf
+  [state]
+  (map (partial source-name->ns-symbol state)))
+
+(defn source-name->source-xf
+  [state]
+  (map (partial source-name->source state)))
+
+(defn dependents-xf
+  [ns-symbol]
+  (filter (fn [{:keys [requires]}] (requires ns-symbol))))
+
+(defn source->dependents-xf
+  [state source]
+  (dependents-xf (source-name->ns-symbol state source)))
+
+(defn source->dependent-names-xf
+  [state source]
+  (comp (source->dependents-xf state source) name-xf))
+
+;;-------------------------------------------------------------------
+;; Queries
+
+(defn source->dependents
+  [state source]
+  (set (sequence (source->dependents-xf state source) (sources state))))
+
+(defn source-name->dependents
+  [state source-name]
+  (source->dependents state (source-name->source state source-name)))
+
+(defn source-name->dependent-names
+  [state source-name]
+  (let [xf (source->dependent-names-xf state
+                                       (source-name->source state source-name))]
+    (set (sequence xf (sources state)))))
+
+(defn source-symbol->dependent-names
+  [state source-symbol]
+  (set (sequence (comp (dependents-xf source-symbol) name-xf)
+                 (sources state))))
+
+(defn sources->dependents
+  [state sources]
+  (->> sources
+       (mapcat (partial source->dependents state))
+       (into #{})))
+
 (defn conj-in [m k v]
   (update-in m k (fn [old] (conj old v))))
 
