@@ -1236,6 +1236,8 @@ enable-emit-constants [state]
 
 ;; Log
 
+(def BuildLog log/BuildLog)
+
 (def log-warning log/log-warning)
 
 (def log-progress log/log-progress)
@@ -1246,6 +1248,7 @@ enable-emit-constants [state]
 
 (def logger log/logger)
 
+(def version 1)
 
 ;;-------------------------------------------------------------------
 ;; Watch
