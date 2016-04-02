@@ -93,7 +93,7 @@ normalize-resource-name
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
    with ns-related infos"
-  [{:keys [logger] :as state} {:keys [^String name input] :as rc}]
+  [{:keys [logger] :as state} {:keys [^String name input source-path] :as rc}]
   {:pre [(compiler-state? state)]}
   (let [eof-sentinel (Object.)
         cljc? (.endsWith name ".cljc")
@@ -116,14 +116,17 @@ normalize-resource-name
           ;; could not parse NS
           ;; be silent about it until we actually require and attempt to compile the file
           ;; make best estimate guess what the file might provide based on name
-          (let [guessed-ns (util/cljs-file->ns name)]
-            (assoc rc
-              :ns guessed-ns
-              :requires #{'cljs.core}
-              :require-order ['cljs.core]
-              :provides #{guessed-ns}
-              :type :cljs
-              )))))))
+          (do
+            (log-warning logger (format "WARNING could not parse ns declaration of %s via %s" name source-path))
+            (log-warning logger (format "Clojure tools reader returned the following exception: %s" e))
+            (log-warning logger (format "Continuing with build..."))
+            (let [guessed-ns (util/cljs-file->ns name)]
+              (assoc rc
+                :ns guessed-ns
+                :requires #{'cljs.core}
+                :require-order ['cljs.core]
+                :provides #{guessed-ns}
+                :type :cljs))))))))
 
 (defn inspect-resource
   [state {:keys [name] :as rc}]
