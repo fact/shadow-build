@@ -1097,7 +1097,7 @@ enable-emit-constants [state]
                      "goog.LOCALE" "en"}})
 
 (defn configure [overrides]
-  (merge base-configuration overrides))
+  (with-meta (merge base-configuration overrides) (meta overrides)))
 
 (defn- ->file [path]
   (cond
