@@ -95,8 +95,7 @@
 
 (defn get-reloadable-source-paths [state]
   (->> state
-       :source-paths
-       (vals)
+       (source-paths)
        (filter :reloadable)
        (map :path)
        (set)))
@@ -116,11 +115,7 @@
 (defn get-resource-by-js-name [state js-name]
   {:pre [(compiler-state? state)
          (string? js-name)]}
-  (let [rcs
-        (->> (:sources state)
-             (vals)
-             (filter #(= js-name (:js-name %)))
-             (into []))]
+  (let [rcs (filterv #(= js-name (:js-name %)) (sources state))]
     (when (not= 1 (count rcs))
       ;; FIXME: this should be checked when scanning for resources
       (throw (ex-info (format "multiple resources for js-name:%s" js-name)
@@ -130,8 +125,8 @@
 
 (defn get-dependent-names
   [state ns-sym]
-  (->> (:sources state)
-       (vals)
+  (->> state
+       (sources)
        (filter (fn [{:keys [requires]}]
                  (contains? requires ns-sym)))
        (map :name)
@@ -155,8 +150,8 @@
 (defn get-resources-using-macro
   "returns a set of names using the macro ns"
   [state macro-ns]
-  (let [direct-dependents (->> (:sources state)
-                               (vals)
+  (let [direct-dependents (->> state
+                               (sources)
                                (filter (fn [{:keys [macros] :as rc}]
                                          (contains? macros macro-ns)))
                                (map :name)
@@ -234,8 +229,7 @@
   (let [name (get-in state [:provide->source ns-sym])]
     (when-not name
       (let [reqs (->> state
-                      :sources
-                      (vals)
+                      (sources)
                       (filter #(contains? (:requires %) ns-sym))
                       (map :name)
                       (into #{}))]
