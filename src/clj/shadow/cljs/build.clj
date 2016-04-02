@@ -634,42 +634,43 @@
    this cannot do a partial incremental compile"
   [{:keys [n-compile-threads logger] :as state} source-names]
   (log/log-progress logger (format "Compiling with %d threads" n-compile-threads))
-  (with-redefs [ana/parse shadow-parse]
-    (with-compiler-env state
-      (ana/load-core)
-      (let [ready (atom #{}) ;; namespaces that are ready to be used
-            compiled (atom []) ;; files that were actually compiled (not recycled)
-            errors (atom {}) ;; source-name -> exception
+  (let [exec (Executors/newFixedThreadPool n-compile-threads)]
+    (try
+      (with-redefs [ana/parse shadow-parse]
+        (with-compiler-env state
+          (ana/load-core)
+          (let [ready (atom #{}) ;; namespaces that are ready to be used
+                compiled (atom []) ;; files that were actually compiled (not recycled)
+                errors (atom {}) ;; source-name -> exception
 
-            exec (Executors/newFixedThreadPool n-compile-threads)
-            tasks
-            (->> (for [source-name source-names]
-                   ;; bound-fn for with-compiler-state
-                   (let [task-fn (bound-fn [] (par-compile-one state ready compiled errors source-name))]
-                     (.submit exec ^Callable task-fn)))
-                 (doall) ;; force submit all, then deref
-                 (mapv deref))]
+                tasks
+                (->> (for [source-name source-names]
+                       ;; bound-fn for with-compiler-state
+                       (let [task-fn (bound-fn [] (par-compile-one state ready compiled errors source-name))]
+                         (.submit exec ^Callable task-fn)))
+                     (doall) ;; force submit all, then deref
+                     (mapv deref))]
 
-        ;; FIXME: might deadlock here if any of the derefs fail
-        (.shutdown exec)
+            ;; unlikely to encounter 2 concurrent errors
+            ;; so unpack for a single error for better stacktrace
+            (let [errs @errors]
+              (case (count errs)
+                0 nil
+                1 (let [[name err] (first errs)]
+                    (throw (ex-info (format "compilation of \"%s\" failed" name) {} err)))
+                (throw (ex-info "compilation failed" errs))))
 
-        ;; unlikely to encounter 2 concurrent errors
-        ;; so unpack for a single error for better stacktrace
-        (let [errs @errors]
-          (case (count errs)
-            0 nil
-            1 (let [[name err] (first errs)]
-                (throw (ex-info (format "compilation of \"%s\" failed" name) {} err)))
-            (throw (ex-info "compilation failed" errs))))
-
-        (-> state
-            (update :sources (fn [sources]
-                               (reduce
-                                 (fn [sources {:keys [name] :as src}]
-                                   (assoc sources name src))
-                                 sources
-                                 tasks)))
-            (assoc :compiled @compiled))))))
+            (-> state
+                (update :sources (fn [sources]
+                                   (reduce
+                                    (fn [sources {:keys [name] :as src}]
+                                      (assoc sources name src))
+                                    sources
+                                    tasks)))
+                (assoc :compiled @compiled)))))
+      (finally
+       ;; FIXME: might deadlock here if any of the derefs fail
+       (.shutdown exec)))))
 
 
 (defn- prepare-compile [state]
