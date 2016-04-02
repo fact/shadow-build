@@ -1217,7 +1217,7 @@ enable-emit-constants [state]
 
 (def goog-base-name closure/goog-base-name)
 
-(def make-closure-compile closure/make-closure-compiler)
+(def make-closure-compiler closure/make-closure-compiler)
 
 (def closure-add-replace-constants-pass
   closure/closure-add-replace-constants-pass)
