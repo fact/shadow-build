@@ -1167,6 +1167,8 @@ enable-emit-constants [state]
 
 (def write-cache util/write-transit)
 
+(def classpath-entries util/classpath-entries)
+
 ;; Internal
 
 (def get-closure-compiler internal/get-closure-compiler)
