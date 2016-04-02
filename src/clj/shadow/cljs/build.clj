@@ -1176,11 +1176,17 @@ enable-emit-constants [state]
 
 ;; Resource
 
+(def inspect-resource common/inspect-resource)
+
 (def merge-resource common/merge-resource)
 
 (def merge-resources common/merge-resources)
 
+(def reset-resource-by-name common/reset-resource-by-name)
+
 (def should-ignore-resource? common/should-ignore-resource?)
+
+(def unmerge-resource common/unmerge-resource)
 
 ;; File
 
