@@ -673,7 +673,7 @@
        (.shutdown exec)))))
 
 
-(defn- prepare-compile [state]
+(defn prepare-compile [state]
   (let [runtime-setup (make-runtime-setup state)]
     (-> (finalize-config state)
         (common/merge-resource runtime-setup)
