@@ -58,11 +58,13 @@
 
 (defn error-report
   ([state e]
-   (.flush *out*)
-   (.write *err* "====== ERROR ==============\n")
-   (pst e)
-   (.write *err* "===========================\n")
-   (.flush *err*))
+   (let [^java.io.Writer *out* *out*
+         ^java.io.Writer *err* *err*]
+     (.flush *out*)
+     (.write *err* "====== ERROR ==============\n")
+     (pst e)
+     (.write *err* "===========================\n")
+     (.flush *err*)))
   ([state e rc]
    (error-report state e)))
 
